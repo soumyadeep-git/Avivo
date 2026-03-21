@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: avivo-rag-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Mount the local db folder so SQLite data persists across container restarts
+      - ./db:/app/db
+      # Mount the data folder in case you want to add documents without rebuilding
+      - ./data:/app/data
