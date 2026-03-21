@@ -1,0 +1,13 @@
+# Virtual Environment
+venv/
+__pycache__/
+*.pyc
+
+# Local Data and Databases
+db/
+data/
+!data/README.md
+
+# Secrets
+.env
+.env.*
