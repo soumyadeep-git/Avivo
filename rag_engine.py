@@ -216,7 +216,7 @@ class RAGEngine:
             "Answer using the retrieved context whenever possible. "
             "If the context is weak or missing, explicitly say that the answer is based on limited retrieved evidence. "
             "Do not invent citations or claim certainty you do not have. "
-            "Prefer concise, directly useful answers."
+            "Prefer concise, directly useful answers written in plain text."
         )
 
         messages = [{"role": "system", "content": system_prompt}]
@@ -228,7 +228,8 @@ class RAGEngine:
             "Answer in this structure:\n"
             "1. Direct answer\n"
             "2. Short supporting explanation\n"
-            "3. Mention if the retrieved context was limited when applicable"
+            "3. Mention if the retrieved context was limited when applicable\n"
+            "Do not use markdown tables. Keep the answer readable in a chat message."
         )
         messages.append({"role": "user", "content": prompt_with_context})
 

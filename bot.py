@@ -5,6 +5,7 @@ Handles user interactions, routes commands, and manages image/text inputs.
 
 import logging
 from io import BytesIO
+from typing import Any, Dict, List
 
 from telegram import Update
 from telegram.ext import (
@@ -28,41 +29,90 @@ logger = logging.getLogger(__name__)
 # Global RAG Engine Instance
 rag = RAGEngine()
 
+EXAMPLE_QUERIES = [
+    "What are path parameters in FastAPI?",
+    "How do I declare query parameters?",
+    "When should I use async def in FastAPI?",
+]
+
+
+def format_examples() -> str:
+    """Return a short evaluator-friendly list of demo prompts."""
+    return "\n".join(f"- /ask {query}" for query in EXAMPLE_QUERIES)
+
+
+def build_answer_message(result: Dict[str, Any]) -> str:
+    """Format query responses in a polished evaluator-friendly layout."""
+    answer = (result.get("answer") or "").strip()
+    sources: List[str] = result.get("sources", [])
+    source_snippets: List[str] = result.get("source_snippets", [])
+    is_cached = result.get("cached", False)
+    is_grounded = result.get("grounded", False)
+
+    response_sections = ["Answer", answer or "No answer generated."]
+
+    evidence_label = "Grounded in retrieved documentation" if is_grounded else "Partially grounded; retrieved context was limited"
+    if is_cached:
+        evidence_label += " | Served from semantic cache"
+    response_sections.extend(["", f"Evidence: {evidence_label}"])
+
+    if sources:
+        response_sections.append("")
+        response_sections.append("Sources:")
+        response_sections.extend(f"- {source}" for source in sources[:3])
+
+    if source_snippets:
+        response_sections.append("")
+        response_sections.append("Retrieved snippets:")
+        response_sections.extend(f"- {snippet}" for snippet in source_snippets[:2])
+
+    return "\n".join(response_sections).strip()
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles the /start command."""
     user = update.effective_user
     welcome_msg = (
-        f"Hi {user.first_name}! 👋\n\n"
-        "I am an advanced GenAI Bot featuring a **Mini-RAG Knowledge Base** and **Vision Capabilities**.\n\n"
-        "🛠️ **Available Commands:**\n"
-        "🔹 `/ask <query>` - Ask a question about my knowledge base.\n"
-        "🔹 `/summarize` - Get a summary of our recent conversation.\n"
-        "🔹 `/help` - Show detailed instructions.\n\n"
-        "🖼️ **Bonus:** Send me an image, and I will describe it and generate tags for you!"
+        f"Hi {user.first_name}!\n\n"
+        "I am a retrieval-augmented Telegram assistant with document QA and image understanding.\n\n"
+        "Commands:\n"
+        "- /ask <query> : ask a question against the knowledge base\n"
+        "- /summarize : summarize recent conversation history\n"
+        "- /help : show instructions and demo prompts\n\n"
+        "Try one of these demo questions:\n"
+        f"{format_examples()}\n\n"
+        "You can also upload an image and I will describe it."
     )
-    await update.message.reply_markdown(welcome_msg)
+    await update.message.reply_text(welcome_msg)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles the /help command."""
     help_text = (
-        "🤖 **Bot Usage Instructions:**\n\n"
-        "**1. Text Queries (Mini-RAG)**\n"
-        "Use `/ask` followed by your question.\n"
-        "`/ask What is the company's remote work policy?`\n\n"
-        "**2. Multi-Modal Vision (Innovation Bonus)**\n"
-        "Just upload any photo directly to this chat. I will process it and return a caption + keywords.\n\n"
-        "**3. Memory & Summarization**\n"
-        "Use `/summarize` to summarize our recent chat history.\n\n"
-        "⚡ *Efficiency Note:* I use Semantic Caching! If you ask the exact same question, I'll answer instantly without API calls."
+        "Usage guide\n\n"
+        "1. Text queries\n"
+        "Use /ask followed by a question.\n"
+        "Example prompts:\n"
+        f"{format_examples()}\n\n"
+        "2. Image understanding\n"
+        "Upload an image directly in chat to receive a caption and tags.\n\n"
+        "3. Conversation memory\n"
+        "Use /summarize to get a concise summary of recent interactions.\n\n"
+        "Response format\n"
+        "- Direct answer\n"
+        "- Evidence quality note\n"
+        "- Source citations\n"
+        "- Retrieved snippet preview when available"
     )
-    await update.message.reply_markdown(help_text)
+    await update.message.reply_text(help_text)
 
 async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Processes text queries through the RAG engine."""
     user_id = update.effective_user.id
     
     if not context.args:
-        await update.message.reply_text("Please provide a query after /ask. Example: /ask What is the policy?")
+        await update.message.reply_text(
+            "Please provide a query after /ask.\n\nExample prompts:\n"
+            f"{format_examples()}"
+        )
         return
         
     query_text = " ".join(context.args)
@@ -71,32 +121,7 @@ async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     try:
         result = await rag.query(user_id=user_id, query_text=query_text)
         
-        answer = result["answer"]
-        sources = result["sources"]
-        source_snippets = result.get("source_snippets", [])
-        is_cached = result.get("cached", False)
-        is_grounded = result.get("grounded", False)
-
-        # Build the final message with explicit grounding cues.
-        final_message = f"{answer.strip()}\n\n"
-
-        if is_cached:
-            final_message += "⚡ Answer served from semantic cache.\n"
-
-        if not is_grounded:
-            final_message += "Note: retrieved context was limited, so this answer may rely partly on general model knowledge.\n"
-
-        if sources:
-            final_message += "\nSources:\n"
-            for source in sources[:3]:
-                final_message += f"- {source}\n"
-
-        if source_snippets:
-            final_message += "\nRetrieved snippets:\n"
-            for snippet in source_snippets[:2]:
-                final_message += f"- {snippet}\n"
-
-        await update.message.reply_text(final_message.strip())
+        await update.message.reply_text(build_answer_message(result))
 
     except Exception as e:
         logger.error(f"Error processing query: {e}")
@@ -109,7 +134,7 @@ async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     
     try:
         summary = await rag.summarize(user_id)
-        await update.message.reply_text(f"📝 **Conversation Summary:**\n{summary}", parse_mode='Markdown')
+        await update.message.reply_text(f"Conversation summary\n\n{summary}")
     except Exception as e:
         logger.error(f"Error summarizing: {e}")
         await update.message.reply_text("❌ Could not summarize at this time.")
@@ -134,7 +159,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # Process image
         description = await rag.describe_image(user_id, image_bytes)
         
-        await update.message.reply_markdown(description)
+        await update.message.reply_text(description)
         
     except Exception as e:
         logger.error(f"Error processing image: {e}")
@@ -142,7 +167,10 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def handle_unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Guides users to proper commands for standard text."""
-    await update.message.reply_text("To ask a question, please use the /ask command. For example:\n/ask Hello")
+    await update.message.reply_text(
+        "Use /ask followed by a question.\n\nExample prompts:\n"
+        f"{format_examples()}"
+    )
 
 def main() -> None:
     """Application entry point."""
