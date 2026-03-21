@@ -23,7 +23,10 @@ CACHE_COLLECTION_NAME = "semantic_cache"
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
 # RAG & Chunking Settings
-CHUNK_SIZE = 500
-CHUNK_OVERLAP = 50
+CHUNK_SIZE = 900
+CHUNK_OVERLAP = 120
 SIMILARITY_THRESHOLD = 0.2  # L2 distance threshold for cache hits
-TOP_K_RETRIEVAL = 3         # Number of chunks to retrieve for context
+TOP_K_RETRIEVAL = 4         # Number of chunks to retrieve for context
+MAX_HISTORY_MESSAGES = 6
+MAX_CONTEXT_CHARS = 4000
+MIN_RELEVANCE_DISTANCE = 1.2

@@ -73,22 +73,31 @@ async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         
         answer = result["answer"]
         sources = result["sources"]
+        source_snippets = result.get("source_snippets", [])
         is_cached = result.get("cached", False)
-        
-        # Build the final message (User Experience)
-        final_message = f"{answer}\n\n"
-        
+        is_grounded = result.get("grounded", False)
+
+        # Build the final message with explicit grounding cues.
+        final_message = f"{answer.strip()}\n\n"
+
         if is_cached:
-            final_message += "⚡ *Answer served instantly from Semantic Cache.*\n"
-            
+            final_message += "⚡ Answer served from semantic cache.\n"
+
+        if not is_grounded:
+            final_message += "Note: retrieved context was limited, so this answer may rely partly on general model knowledge.\n"
+
         if sources:
-            unique_sources = list(set(sources))
-            final_message += f"📚 *Sources:* `{', '.join(unique_sources)}`"
-        else:
-            final_message += "📚 *Sources:* General Knowledge"
-            
-        await update.message.reply_markdown(final_message)
-        
+            final_message += "\nSources:\n"
+            for source in sources[:3]:
+                final_message += f"- {source}\n"
+
+        if source_snippets:
+            final_message += "\nRetrieved snippets:\n"
+            for snippet in source_snippets[:2]:
+                final_message += f"- {snippet}\n"
+
+        await update.message.reply_text(final_message.strip())
+
     except Exception as e:
         logger.error(f"Error processing query: {e}")
         await update.message.reply_text("❌ Sorry, I encountered an error while processing your request. Please try again.")

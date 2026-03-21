@@ -4,8 +4,10 @@ and Groq API for ultra-fast language model generation and multi-modal vision.
 """
 
 import base64
+import hashlib
 from typing import Dict, Any, List
 from collections import defaultdict
+import logging
 
 import chromadb
 from chromadb.utils import embedding_functions
@@ -20,8 +22,14 @@ from config import (
     GROQ_VISION_MODEL,
     GROQ_API_KEY,
     SIMILARITY_THRESHOLD,
-    TOP_K_RETRIEVAL
+    TOP_K_RETRIEVAL,
+    MAX_HISTORY_MESSAGES,
+    MAX_CONTEXT_CHARS,
+    MIN_RELEVANCE_DISTANCE,
 )
+
+
+logger = logging.getLogger(__name__)
 
 class RAGEngine:
     def __init__(self):
@@ -54,16 +62,92 @@ class RAGEngine:
         # User Memory Buffer: UserID -> List of Messages (UX: Context awareness)
         # Keeps last 6 messages (3 turns)
         self.user_history = defaultdict(list)
-        
+
     def _add_to_history(self, user_id: int, role: str, content: str) -> None:
         """Maintains the conversation history (last 3 interactions)."""
         self.user_history[user_id].append({"role": role, "content": content})
-        if len(self.user_history[user_id]) > 6:
-            self.user_history[user_id] = self.user_history[user_id][-6:]
+        if len(self.user_history[user_id]) > MAX_HISTORY_MESSAGES:
+            self.user_history[user_id] = self.user_history[user_id][-MAX_HISTORY_MESSAGES:]
 
     def _get_history(self, user_id: int) -> List[Dict[str, str]]:
         """Retrieves user conversation history."""
         return self.user_history[user_id]
+
+    @staticmethod
+    def _normalize_query(query_text: str) -> str:
+        """Normalize user queries so cache hits are more consistent."""
+        return " ".join(query_text.strip().lower().split())
+
+    @staticmethod
+    def _make_cache_id(user_id: int, query_text: str) -> str:
+        digest = hashlib.sha256(f"{user_id}:{query_text}".encode("utf-8")).hexdigest()[:24]
+        return f"cache_{digest}"
+
+    @staticmethod
+    def _format_source_label(metadata: Dict[str, Any]) -> str:
+        source = metadata.get("source", "Unknown")
+        section = metadata.get("section")
+        if section and section not in {"Introduction", "Untitled Section"}:
+            return f"{source} -> {section}"
+        return source
+
+    def _build_retrieval_context(self, kb_results: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert raw retrieval results into prompt context and user-facing citations."""
+        retrieved_items: List[Dict[str, Any]] = []
+        documents = kb_results.get("documents") or [[]]
+        metadatas = kb_results.get("metadatas") or [[]]
+        distances = kb_results.get("distances") or [[]]
+
+        for idx, document in enumerate(documents[0]):
+            metadata = metadatas[0][idx] if idx < len(metadatas[0]) else {}
+            distance = distances[0][idx] if idx < len(distances[0]) else None
+            if document:
+                retrieved_items.append(
+                    {
+                        "content": document,
+                        "metadata": metadata,
+                        "distance": distance,
+                    }
+                )
+
+        relevant_items = [
+            item
+            for item in retrieved_items
+            if item["distance"] is None or item["distance"] <= MIN_RELEVANCE_DISTANCE
+        ]
+        chosen_items = relevant_items or retrieved_items[:1]
+
+        context_parts: List[str] = []
+        source_labels: List[str] = []
+        source_snippets: List[str] = []
+        total_chars = 0
+
+        for item in chosen_items:
+            label = self._format_source_label(item["metadata"])
+            source_labels.append(label)
+
+            snippet_preview = " ".join(item["content"].split())
+            if snippet_preview:
+                source_snippets.append(f"{label}: {snippet_preview[:180]}")
+
+            context_piece = f"[Source: {label}]\n{item['content']}"
+            if total_chars + len(context_piece) > MAX_CONTEXT_CHARS:
+                remaining = MAX_CONTEXT_CHARS - total_chars
+                if remaining <= 0:
+                    break
+                context_piece = context_piece[:remaining]
+
+            context_parts.append(context_piece)
+            total_chars += len(context_piece)
+            if total_chars >= MAX_CONTEXT_CHARS:
+                break
+
+        return {
+            "context": "\n\n".join(context_parts).strip(),
+            "sources": list(dict.fromkeys(source_labels)),
+            "source_snippets": source_snippets[:3],
+            "has_relevant_context": bool(relevant_items),
+        }
 
     async def query(self, user_id: int, query_text: str) -> Dict[str, Any]:
         """
@@ -76,12 +160,13 @@ class RAGEngine:
         4. Context + Query + History -> Groq LLM -> Response
         5. Store in Cache & History -> Return Response
         """
-        
+        normalized_query = self._normalize_query(query_text)
+
         # --- 1. Semantic Caching Check (Efficiency) ---
         if self.cache_collection.count() > 0:
             try:
                 cache_results = self.cache_collection.query(
-                    query_texts=[query_text],
+                    query_texts=[normalized_query],
                     n_results=1
                 )
                 if cache_results["distances"] and len(cache_results["distances"][0]) > 0:
@@ -89,49 +174,64 @@ class RAGEngine:
                     if distance < SIMILARITY_THRESHOLD:
                         cached_answer = cache_results["metadatas"][0][0]["answer"]
                         sources_str = cache_results["metadatas"][0][0]["sources"]
+                        source_snippets_str = cache_results["metadatas"][0][0].get("source_snippets", "")
                         sources = sources_str.split(",") if sources_str else []
-                        
+                        source_snippets = source_snippets_str.split(" || ") if source_snippets_str else []
+
                         self._add_to_history(user_id, "user", query_text)
                         self._add_to_history(user_id, "assistant", cached_answer)
-                        return {"answer": cached_answer, "sources": sources, "cached": True}
+                        return {
+                            "answer": cached_answer,
+                            "sources": sources,
+                            "source_snippets": source_snippets,
+                            "cached": True,
+                            "grounded": True,
+                        }
             except Exception as e:
-                print(f"Cache error: {e}")
+                logger.warning("Cache error: %s", e)
 
         # --- 2. Knowledge Base Retrieval ---
         try:
             kb_results = self.kb_collection.query(
                 query_texts=[query_text],
-                n_results=TOP_K_RETRIEVAL
+                n_results=TOP_K_RETRIEVAL,
+                include=["documents", "metadatas", "distances"],
             )
         except Exception:
-            return {"answer": "The Knowledge Base is empty or unavailable. Please run ingest.py.", "sources": [], "cached": False}
-        
-        context_chunks = []
-        sources = set()
-        
-        if kb_results["documents"] and len(kb_results["documents"][0]) > 0:
-            for idx, doc in enumerate(kb_results["documents"][0]):
-                context_chunks.append(doc)
-                source_meta = kb_results["metadatas"][0][idx].get("source", "Unknown")
-                sources.add(source_meta)
-                
-        context_str = "\n\n".join(context_chunks) if context_chunks else "No specific relevant context found."
-        sources_list = list(sources)
-        
+            return {
+                "answer": "The knowledge base is empty or unavailable. Please run `python ingest.py` first.",
+                "sources": [],
+                "source_snippets": [],
+                "cached": False,
+                "grounded": False,
+            }
+
+        retrieval_context = self._build_retrieval_context(kb_results)
+        context_str = retrieval_context["context"] or "No relevant context found."
+        sources_list = retrieval_context["sources"]
+
         # --- 3. Prompt Construction (Innovation: Clever Prompting) ---
         system_prompt = (
-            "You are a helpful, professional AI assistant with a knowledge base. "
-            "Use the provided context to answer the user's question accurately. "
-            "If the answer isn't in the context, clearly state that, but provide a general helpful answer if possible. "
-            "Format your response beautifully using Markdown (bolding, lists) for readability."
+            "You are a careful RAG assistant. "
+            "Answer using the retrieved context whenever possible. "
+            "If the context is weak or missing, explicitly say that the answer is based on limited retrieved evidence. "
+            "Do not invent citations or claim certainty you do not have. "
+            "Prefer concise, directly useful answers."
         )
-        
+
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(self._get_history(user_id))
-        
-        prompt_with_context = f"Context from Knowledge Base:\n{context_str}\n\nUser Query: {query_text}"
+
+        prompt_with_context = (
+            f"Retrieved Context:\n{context_str}\n\n"
+            f"Question: {query_text}\n\n"
+            "Answer in this structure:\n"
+            "1. Direct answer\n"
+            "2. Short supporting explanation\n"
+            "3. Mention if the retrieved context was limited when applicable"
+        )
         messages.append({"role": "user", "content": prompt_with_context})
-        
+
         # --- 4. LLM Generation ---
         response = await self.groq_client.chat.completions.create(
             messages=messages,
@@ -142,16 +242,31 @@ class RAGEngine:
         answer = response.choices[0].message.content
         
         # --- 5. Update State & Return ---
-        self.cache_collection.add(
-            documents=[query_text],
-            metadatas=[{"answer": answer, "sources": ",".join(sources_list)}],
-            ids=[f"cache_{hash(query_text)}_{user_id}"]
-        )
-        
+        cache_id = self._make_cache_id(user_id, normalized_query)
+        cache_metadata = {
+            "answer": answer,
+            "sources": ",".join(sources_list),
+            "source_snippets": " || ".join(retrieval_context["source_snippets"]),
+        }
+        try:
+            self.cache_collection.upsert(
+                documents=[normalized_query],
+                metadatas=[cache_metadata],
+                ids=[cache_id],
+            )
+        except Exception as exc:
+            logger.warning("Failed to upsert semantic cache entry: %s", exc)
+
         self._add_to_history(user_id, "user", query_text)
         self._add_to_history(user_id, "assistant", answer)
-        
-        return {"answer": answer, "sources": sources_list, "cached": False}
+
+        return {
+            "answer": answer,
+            "sources": sources_list,
+            "source_snippets": retrieval_context["source_snippets"],
+            "cached": False,
+            "grounded": retrieval_context["has_relevant_context"],
+        }
 
     async def summarize(self, user_id: int) -> str:
         """Summarizes the recent conversation history for a user."""
