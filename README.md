@@ -1,91 +1,201 @@
-# Telegram GenAI Bot - Mini-RAG & Multi-modal System
+# Telegram RAG Bot
 
-This project is a high-performance Telegram Bot developed specifically to fulfill the Data Science/GenAI engineering assignment. It goes beyond the basic requirements by implementing both **Option A (Mini-RAG)** and **Option B (Vision)**, maximizing efficiency, code quality, and user experience.
+A deployment-oriented Telegram bot that combines:
 
----
+- document question answering with RAG
+- semantic caching
+- conversational memory
+- image description using Groq vision models
+- FastAPI webhook support for serverless and container deployment
 
-## 🧪 How This Meets Evaluation Criteria
+This repository started as an assignment submission and has been upgraded toward a production-ready architecture.
 
-### 1. Code Quality (Readable, modular, minimal dependencies)
-- **Modularity:** The codebase is strictly split into logical components: `config.py` (settings), `ingest.py` (data pipeline), `rag_engine.py` (LLM & DB logic), and `bot.py` (Telegram interface).
-- **Readability:** Functions are fully type-hinted and include detailed docstrings.
-- **Minimal Dependencies:** Uses exactly what is needed—no bloated orchestrators like Langchain. Relies directly on `chromadb`, `sentence-transformers`, `python-telegram-bot`, and the `groq` SDK.
+## Architecture
 
-### 2. System Design (Logical architecture, clear data flow)
-The system is designed for asynchronous concurrency, ensuring the bot remains responsive. Data flows clearly:
-1. Document -> Local Chunking -> Sentence-Transformers -> ChromaDB (SQLite).
-2. User Message -> Telegram Async Handler -> RAG Engine -> Semantic Cache Check -> Groq API -> Markdown Response.
+### Query serving flow
 
 ```mermaid
 flowchart TD
-    User([Telegram User]) -->|"1. /ask, /summarize, or Photo"| Bot["bot.py (Async Handlers)"]
-    Bot -->|"2. Route Query"| RAG["rag_engine.py (Core Logic)"]
-    
-    subgraph ragSystem [Local Retrieval & Memory]
-        RAG -->|"3. Embed Query"| Embedder["sentence-transformers (all-MiniLM-L6-v2)"]
-        Embedder -->|"4. Check Semantic Cache"| Cache["ChromaDB Cache Collection"]
-        Cache -->|"5a. Cache Hit (Instant Return)"| RAG
-        Cache -->|"5b. Cache Miss"| DB["ChromaDB KB Collection"]
-        DB -->|"6. Retrieve Top-K"| Builder["Context Builder"]
-        Builder -->|"7. Append History"| Memory["User History Buffer (Last 3)"]
-    end
-    
-    Memory -->|"8. Prompt"| Groq["Groq API"]
-    Groq -->|"9a. Llama-3 8B (Text)"| Bot
-    Groq -->|"9b. Llama-3.2 Vision (Images)"| Bot
-    Bot -->|"10. Markdown Response"| User
+    User[TelegramUser] -->|"message or image"| Telegram[TelegramAPI]
+    Telegram -->|"webhook update"| FastAPI[FastAPIWebhookApp]
+    FastAPI -->|"process update"| Bot[TelegramApplication]
+    Bot -->|"route command"| RAG[RAGEngine]
+    RAG -->|"cache lookup"| Cache[QdrantCacheCollection]
+    RAG -->|"vector retrieval"| KB[QdrantKnowledgeCollection]
+    RAG -->|"chat completion"| Groq[GroqAPI]
+    Bot -->|"formatted response"| Telegram
+    Telegram --> User
 ```
 
-### 3. Model Use (Good reasoning for chosen model)
-- **Embeddings: `all-MiniLM-L6-v2` (Local):** Chosen for its microscopic memory footprint (~80MB). It runs instantly on standard CPUs, making it the perfect local embedding model for lightweight edge devices.
-- **LLM: `llama3-8b-8192` via Groq API:** Running a local LLM (like Ollama 8B) requires heavy RAM/GPU overhead, which harms the "lightweight" goal. Groq's LPU infrastructure provides sub-second inference, creating an exceptionally snappy User Experience without hardware bottlenecks.
-- **Vector DB: `chromadb`:** Satisfies the "local SQLite" assignment requirement seamlessly because ChromaDB defaults to an SQLite backend for persistence, requiring zero separate docker containers or cloud instances.
+### Ingestion flow
 
-### 4. Efficiency (Sensible caching, small model footprint)
-- **Semantic Caching:** Implemented an advanced secondary ChromaDB collection. If a new query has an L2 distance `< 0.2` to a previous query, the bot returns the cached answer instantly, bypassing the LLM API completely and saving costs/latency.
-- **Footprint:** The local storage relies solely on flat files (SQLite/Chroma), and local RAM usage is bound only by the small sentence-transformer model.
+```mermaid
+flowchart TD
+    Docs[MarkdownAndTextDocs] --> Loader[IngestScript]
+    Loader --> Chunker[SectionAwareChunker]
+    Chunker --> Fingerprint[DocumentFingerprinting]
+    Fingerprint --> Embed[LocalEmbeddingModel]
+    Embed --> VectorDB[QdrantKnowledgeCollection]
+```
 
-### 5. User Experience (Clear responses, fast turnaround)
-- **Fast Turnaround:** Typing indicators (`send_chat_action`) are shown immediately.
-- **Clear Responses:** Responses are cleanly formatted using Markdown. When answering a text query, the bot accurately cites the *Source Snippets* (document filenames) used for the answer.
-- **Context Awareness:** The bot maintains the last 3 interactions per user, allowing follow-up questions without losing context.
+## Project structure
 
-### 6. Innovation Bonus (Multi-modal support & Clever prompting)
-- **Multi-modal Support:** Implemented a hybrid model! If a user uploads an image, the bot seamlessly routes it to Groq's `llama-3.2-11b-vision-preview` to generate an intelligent caption and 3 precise tags.
-- **Clever Prompting:** The text prompt intelligently instructs the LLM to format output beautifully with markdown and handle missing context gracefully, rather than blindly answering.
+- `bot.py`: Telegram command handlers and application factory
+- `app.py`: FastAPI webhook app with health and readiness endpoints
+- `api/index.py`: Vercel entrypoint
+- `rag_engine.py`: retrieval, prompting, memory, and Groq integration
+- `vector_store.py`: Qdrant vector abstraction for knowledge base and semantic cache
+- `ingest.py`: chunking, fingerprint-aware indexing, and upserts
+- `scripts/evaluate.py`: benchmark-style demo script
+- `scripts/set_webhook.py`: Telegram webhook registration helper
+- `tests/`: lightweight validation tests
 
----
+## Why these model choices
 
-## 🚀 Setup & Installation
+- Text LLM: `llama-3.1-8b-instant` on Groq for low-latency inference
+- Vision LLM: `llama-3.2-11b-vision-preview` on Groq for image captioning
+- Embeddings: `all-MiniLM-L6-v2` for small-footprint semantic embeddings
+- Vector store: Qdrant for a cloud-deployable retrieval backend with local dev fallback
 
-### 1. Environment Setup
+## Environment variables
+
+Create a `.env` file with at least:
+
+```env
+APP_ENV=development
+DEPLOYMENT_MODE=polling
+LOG_LEVEL=INFO
+
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+GROQ_API_KEY=your_groq_api_key
+
+TELEGRAM_WEBHOOK_BASE_URL=https://your-domain.vercel.app
+TELEGRAM_WEBHOOK_PATH=/telegram/webhook
+TELEGRAM_WEBHOOK_SECRET=your_random_secret
+AUTO_SET_WEBHOOK=false
+
+QDRANT_URL=https://your-qdrant-instance
+QDRANT_API_KEY=your_qdrant_api_key
+QDRANT_LOCAL_PATH=db/qdrant
+```
+
+Notes:
+
+- local development can use `DEPLOYMENT_MODE=polling`
+- production should use `DEPLOYMENT_MODE=webhook`
+- production also requires `QDRANT_URL`
+- if `QDRANT_URL` is omitted, local embedded Qdrant storage is used
+
+## Local development
+
+### 1. Install dependencies
+
 ```bash
 python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Configure API Keys
-Edit the `.env` file in the root directory:
-```env
-TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
-GROQ_API_KEY=your_groq_api_key_here
-```
+### 2. Add knowledge-base data
 
-### 3. Ingest Data (Knowledge Base)
-1. Place your text documents (`.md` or `.txt`) into the `data/` folder.
-2. Run the ingestion script to chunk, embed, and store them locally:
+Place `.md` or `.txt` files in the `data/` directory.
+
+### 3. Index documents
+
 ```bash
 python ingest.py
 ```
 
-### 4. Run the Bot
+### 4. Run locally with polling
+
+Set `DEPLOYMENT_MODE=polling` and run:
+
 ```bash
 python bot.py
 ```
 
-## 🤖 Usage Guide (Telegram)
-- `/start` - Initial bot greeting.
-- `/ask <question>` - Query the knowledge base. (e.g., `/ask What is the remote work policy?`). The bot will return the answer and cite the source file.
-- **Send an Image** - Directly upload an image. The bot will automatically trigger the Vision model to caption and tag it.
-- `/summarize` - Summarize the active conversation context.
+## Webhook mode
+
+Set:
+
+```env
+DEPLOYMENT_MODE=webhook
+TELEGRAM_WEBHOOK_BASE_URL=https://your-domain.vercel.app
+TELEGRAM_WEBHOOK_SECRET=your_random_secret
+```
+
+Run locally or in a container:
+
+```bash
+uvicorn app:app --host 0.0.0.0 --port 8000
+```
+
+Register the webhook:
+
+```bash
+python scripts/set_webhook.py
+```
+
+## Docker
+
+Build and run:
+
+```bash
+docker-compose up --build
+```
+
+The app is exposed on `http://localhost:8000`.
+
+## Vercel deployment
+
+This repository includes:
+
+- `api/index.py` as the serverless entrypoint
+- `vercel.json` for routing
+
+Typical deployment flow:
+
+1. Create a Vercel project from this repo
+2. Set all required environment variables
+3. Deploy
+4. Run `python scripts/set_webhook.py` with the deployed URL configured in `.env`
+
+## Health endpoints
+
+- `GET /health`: shallow liveness check
+- `GET /ready`: readiness check including RAG/vector-store status
+
+## Evaluation and testing
+
+Run the lightweight tests:
+
+```bash
+pytest
+```
+
+Run the benchmark/demo script:
+
+```bash
+python scripts/evaluate.py
+```
+
+The evaluation script prints sample query results, grounding state, sources, and answer previews.
+
+## Demo prompts
+
+Useful Telegram prompts for demos:
+
+- `/start`
+- `/help`
+- `/ask What are path parameters in FastAPI?`
+- `/ask How do I declare query parameters?`
+- `/ask When should I use async def in FastAPI?`
+
+You can also upload an image to trigger the vision pipeline.
+
+## Engineering tradeoffs
+
+- Qdrant was chosen because local disk-backed vector storage is not suitable for serverless deployment.
+- The FastAPI webhook path is more deployment-friendly than Telegram polling.
+- Local polling is still kept for quick development loops.
+- Embeddings remain local for quality and control, but the vector storage layer is cloud-ready.

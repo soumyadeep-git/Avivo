@@ -25,5 +25,5 @@ COPY . .
 # Ensure the database and data directories exist
 RUN mkdir -p /app/db /app/data
 
-# Command to run the bot
-CMD ["python", "bot.py"]
+# Run the FastAPI webhook app
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
