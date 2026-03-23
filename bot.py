@@ -6,7 +6,9 @@ that can be used for polling or webhook-based deployments.
 
 import logging
 from functools import lru_cache
+import html
 from io import BytesIO
+import re
 from typing import Any, Dict, List
 
 from telegram import Update
@@ -24,6 +26,7 @@ from rag_engine import RAGEngine
 
 
 logger = logging.getLogger(__name__)
+CODE_BLOCK_PATTERN = re.compile(r"```([\w+-]*)\n?(.*?)```", re.DOTALL)
 
 EXAMPLE_QUERIES = [
     "What are path parameters in FastAPI?",
@@ -37,6 +40,39 @@ def format_examples() -> str:
     return "\n".join(f"- /ask {query}" for query in EXAMPLE_QUERIES)
 
 
+def _format_text_html(text: str) -> str:
+    escaped = html.escape(text.strip())
+    return escaped
+
+
+def _format_answer_html(answer: str) -> str:
+    if not answer.strip():
+        return "No answer generated."
+
+    parts: List[str] = []
+    last_end = 0
+
+    for match in CODE_BLOCK_PATTERN.finditer(answer):
+        text_before = answer[last_end:match.start()]
+        if text_before.strip():
+            parts.append(_format_text_html(text_before))
+
+        language = match.group(1).strip()
+        code = match.group(2).strip("\n")
+        if language:
+            parts.append(f"<b>{html.escape(language.title())} code</b>")
+        parts.append(f"<pre>{html.escape(code)}</pre>")
+        last_end = match.end()
+
+    trailing_text = answer[last_end:]
+    if trailing_text.strip():
+        parts.append(_format_text_html(trailing_text))
+
+    if not parts:
+        return _format_text_html(answer)
+    return "\n".join(parts)
+
+
 def build_answer_message(result: Dict[str, Any]) -> str:
     """Format query responses in a polished evaluator-friendly layout."""
     answer = (result.get("answer") or "").strip()
@@ -45,7 +81,7 @@ def build_answer_message(result: Dict[str, Any]) -> str:
     is_cached = result.get("cached", False)
     is_grounded = result.get("grounded", False)
 
-    response_sections = ["Answer", answer or "No answer generated."]
+    response_sections = ["<b>Answer</b>", _format_answer_html(answer)]
 
     evidence_label = (
         "Grounded in retrieved documentation"
@@ -54,17 +90,17 @@ def build_answer_message(result: Dict[str, Any]) -> str:
     )
     if is_cached:
         evidence_label += " | Served from semantic cache"
-    response_sections.extend(["", f"Evidence: {evidence_label}"])
+    response_sections.extend(["", f"<b>Evidence</b>\n{html.escape(evidence_label)}"])
 
     if sources:
         response_sections.append("")
-        response_sections.append("Sources:")
-        response_sections.extend(f"- {source}" for source in sources[:3])
+        response_sections.append("<b>Sources</b>")
+        response_sections.extend(f"• {html.escape(source)}" for source in sources[:3])
 
     if source_snippets:
         response_sections.append("")
-        response_sections.append("Retrieved snippets:")
-        response_sections.extend(f"- {snippet}" for snippet in source_snippets[:2])
+        response_sections.append("<b>Retrieved snippets</b>")
+        response_sections.extend(f"• {html.escape(snippet)}" for snippet in source_snippets[:2])
 
     return "\n".join(response_sections).strip()
 
@@ -144,7 +180,7 @@ async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             grounded=result.get("grounded", False),
             sources=len(result.get("sources", [])),
         )
-        await update.message.reply_text(build_answer_message(result))
+        await update.message.reply_html(build_answer_message(result))
     except Exception:
         logger.exception("Failed to process query")
         await update.message.reply_text(

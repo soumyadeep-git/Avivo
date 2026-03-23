@@ -12,8 +12,23 @@ def test_build_answer_message_includes_evidence_sources_and_snippets() -> None:
 
     message = build_answer_message(result)
 
-    assert "Answer" in message
-    assert "Evidence:" in message
+    assert "<b>Answer</b>" in message
+    assert "<b>Evidence</b>" in message
     assert "Served from semantic cache" in message
-    assert "Sources:" in message
-    assert "Retrieved snippets:" in message
+    assert "<b>Sources</b>" in message
+    assert "<b>Retrieved snippets</b>" in message
+
+
+def test_build_answer_message_renders_fenced_code_as_pre_block() -> None:
+    result = {
+        "answer": "Use this example:\n```python\nfrom fastapi import FastAPI\napp = FastAPI()\n```",
+        "sources": [],
+        "source_snippets": [],
+        "cached": False,
+        "grounded": True,
+    }
+
+    message = build_answer_message(result)
+
+    assert "<b>Python code</b>" in message
+    assert "<pre>from fastapi import FastAPI\napp = FastAPI()</pre>" in message
