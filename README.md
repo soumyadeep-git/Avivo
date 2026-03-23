@@ -1,104 +1,53 @@
----
-title: Avivo RAG Assistant
-emoji: "🤖"
-sdk: docker
-app_port: 8000
----
+# Avivo RAG Assistant
 
-# Telegram RAG Bot
+Avivo is a Telegram-based retrieval-augmented assistant built as a hiring assignment submission. It answers questions over a document collection, cites the retrieved evidence, keeps short conversational memory, and can also describe images with a vision model.
 
-A deployment-oriented Telegram bot that combines:
+The current repository is optimized for a reviewer or evaluator who wants to run it locally with minimal friction. The retrieval stack uses local `sentence-transformers/all-MiniLM-L6-v2`, so there is no dependency on external embedding quotas during evaluation.
 
-- document question answering with RAG
-- semantic caching
-- conversational memory
-- image description using Groq vision models
-- FastAPI webhook support for container deployment
-- local semantic embeddings with `all-MiniLM-L6-v2`
+## Why this submission is strong
 
-This repository started as an assignment submission and has been upgraded toward a production-ready architecture.
+- Clean separation between ingestion, retrieval, bot interface, and runtime config
+- Local semantic retrieval with source grounding and snippet previews
+- Fast text generation with Groq and image understanding support
+- Idempotent ingestion with document fingerprinting
+- Lightweight test coverage for the most important paths
+- Clear local setup and demo flow for evaluators
 
-## Architecture
+## What the bot does
 
-### Query serving flow
+- Answers document questions through `/ask`
+- Shows whether the answer is grounded in retrieved material
+- Returns source labels and short snippet evidence
+- Keeps limited recent chat history for follow-up questions
+- Supports `/summarize` for conversation summaries
+- Accepts images and produces a caption plus tags
 
-```mermaid
-flowchart TD
-    User[TelegramUser] -->|"message or image"| Telegram[TelegramAPI]
-    Telegram -->|"webhook update"| FastAPI[FastAPIWebhookApp]
-    FastAPI -->|"process update"| Bot[TelegramApplication]
-    Bot -->|"route command"| RAG[RAGEngine]
-    RAG -->|"cache lookup"| Cache[QdrantCacheCollection]
-    RAG -->|"vector retrieval"| KB[QdrantKnowledgeCollection]
-    RAG -->|"embeddings"| MiniLM[LocalMiniLMEmbeddings]
-    RAG -->|"chat completion"| Groq[GroqAPI]
-    Bot -->|"formatted response"| Telegram
-    Telegram --> User
+## Architecture at a glance
+
+- `bot.py` handles Telegram commands and user interaction
+- `rag_engine.py` handles retrieval, prompting, caching, and answer assembly
+- `vector_store.py` stores document chunks and semantic cache entries in Qdrant
+- `ingest.py` chunks documents, fingerprints them, and indexes them
+- `config.py` centralizes runtime settings and validation
+- `app.py` keeps webhook support available, although local polling is the simplest evaluation path
+
+## Model choices
+
+- Text generation: `llama-3.1-8b-instant` via Groq for low-latency responses
+- Vision: `llama-3.2-11b-vision-preview` via Groq for image understanding
+- Embeddings: `sentence-transformers/all-MiniLM-L6-v2` for strong local semantic search
+- Vector store: Qdrant for simple local persistence and optional cloud portability
+
+## Local setup
+
+### 1. Clone the repo
+
+```bash
+git clone <your-repo-url>
+cd avivo
 ```
 
-### Ingestion flow
-
-```mermaid
-flowchart TD
-    Docs[MarkdownAndTextDocs] --> Loader[IngestScript]
-    Loader --> Chunker[SectionAwareChunker]
-    Chunker --> Fingerprint[DocumentFingerprinting]
-    Fingerprint --> Embed[LocalMiniLMEmbeddings]
-    Embed --> VectorDB[QdrantKnowledgeCollection]
-```
-
-## Project structure
-
-- `bot.py`: Telegram command handlers and application factory
-- `app.py`: FastAPI webhook app with health and readiness endpoints
-- `api/index.py`: legacy Vercel entrypoint
-- `rag_engine.py`: retrieval, prompting, memory, and Groq integration
-- `vector_store.py`: Qdrant vector abstraction for knowledge base and semantic cache
-- `ingest.py`: chunking, fingerprint-aware indexing, and upserts
-- `scripts/evaluate.py`: benchmark-style demo script
-- `scripts/set_webhook.py`: Telegram webhook registration helper
-- `tests/`: lightweight validation tests
-
-## Why these model choices
-
-- Text LLM: `llama-3.1-8b-instant` on Groq for low-latency inference
-- Vision LLM: `llama-3.2-11b-vision-preview` on Groq for image captioning
-- Embeddings: `sentence-transformers/all-MiniLM-L6-v2` for strong local semantic retrieval
-- Vector store: Qdrant Cloud for deployable persistence with local dev fallback
-
-## Environment variables
-
-Create a `.env` file with at least:
-
-```env
-APP_ENV=development
-DEPLOYMENT_MODE=polling
-LOG_LEVEL=INFO
-
-TELEGRAM_BOT_TOKEN=your_telegram_bot_token
-GROQ_API_KEY=your_groq_api_key
-
-TELEGRAM_WEBHOOK_BASE_URL=https://your-app.fly.dev
-TELEGRAM_WEBHOOK_PATH=/telegram/webhook
-TELEGRAM_WEBHOOK_SECRET=your_random_secret
-AUTO_SET_WEBHOOK=false
-
-QDRANT_URL=https://your-qdrant-instance
-QDRANT_API_KEY=your_qdrant_api_key
-QDRANT_LOCAL_PATH=db/qdrant
-```
-
-Notes:
-
-- local development can use `DEPLOYMENT_MODE=polling`
-- production should use `DEPLOYMENT_MODE=webhook`
-- production also requires `QDRANT_URL`
-- local embeddings remove hosted embedding API quotas from the runtime path
-- if `QDRANT_URL` is omitted, local embedded Qdrant storage is used
-
-## Local development
-
-### 1. Install dependencies
+### 2. Create the virtual environment
 
 ```bash
 python3 -m venv venv
@@ -106,105 +55,107 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Add knowledge-base data
+### 3. Create the environment file
 
-Place `.md` or `.txt` files in the `data/` directory.
+Copy the example file and fill in your secrets:
 
-### 3. Index documents
+```bash
+cp .env.example .env
+```
+
+For local evaluation, the only required secrets are:
+
+- `TELEGRAM_BOT_TOKEN`
+- `GROQ_API_KEY`
+
+You can leave `QDRANT_URL` and `QDRANT_API_KEY` empty if you want to use the local embedded Qdrant path.
+
+### 4. Add or keep documents in `data/`
+
+The project reads `.md` and `.txt` files from `data/`. A large FastAPI documentation corpus has already been used during development, but the system works with any similar text-based knowledge base.
+
+### 5. Build the retrieval index
 
 ```bash
 python ingest.py
 ```
 
-### 4. Run locally with polling
+This step is idempotent. Unchanged files are skipped on later runs.
 
-Set `DEPLOYMENT_MODE=polling` and run:
+### 6. Start the bot locally
 
 ```bash
 python bot.py
 ```
 
-## Webhook mode
+This runs the bot in polling mode, which is the fastest way for an evaluator to try the system.
 
-Set:
+## Minimal local configuration
 
-```env
-DEPLOYMENT_MODE=webhook
-TELEGRAM_WEBHOOK_BASE_URL=https://your-domain.vercel.app
-TELEGRAM_WEBHOOK_SECRET=your_random_secret
-```
+The default local flow is:
 
-Run locally or in a container:
+- `APP_ENV=development`
+- `DEPLOYMENT_MODE=polling`
+- local Qdrant path at `db/qdrant`
+- local embeddings through MiniLM
 
-```bash
-uvicorn app:app --host 0.0.0.0 --port 8000
-```
+That means no external deployment step is required to evaluate the assignment locally.
 
-Register the webhook:
+## Example demo flow
 
-```bash
-python scripts/set_webhook.py
-```
+In Telegram:
 
-## Docker
+1. Send `/start`
+2. Ask `What is FastAPI?`
+3. Ask `Explain FastAPI dependency injection with examples from the docs`
+4. Ask `When should I use async def in FastAPI?`
+5. Upload an image and ask for a description
 
-Build and run:
+## Example evaluator prompts
 
-```bash
-docker-compose up --build
-```
+- `/ask What are path parameters in FastAPI?`
+- `/ask How do I declare query parameters?`
+- `/ask How should I structure a larger FastAPI app?`
+- `/ask Explain FastAPI dependency injection with examples from the docs`
+- `/ask Summarize how authentication works in FastAPI`
 
-The app is exposed on `http://localhost:8000`.
+## Testing
 
-## Fly.io deployment
-
-This repository includes a `fly.toml` template for container deployment on Fly.io.
-
-Typical deployment flow:
-
-1. Install the Fly CLI and authenticate
-2. Create your app with `fly launch --copy-config`
-3. Set secrets like `TELEGRAM_BOT_TOKEN`, `GROQ_API_KEY`, `QDRANT_URL`, and `QDRANT_API_KEY`
-4. Deploy with `fly deploy`
-5. Run `python scripts/set_webhook.py` with `TELEGRAM_WEBHOOK_BASE_URL` set to your Fly domain
-
-## Health endpoints
-
-- `GET /health`: shallow liveness check
-- `GET /ready`: readiness check including RAG/vector-store status
-
-## Evaluation and testing
-
-Run the lightweight tests:
+Run the test suite with:
 
 ```bash
 pytest
 ```
 
-Run the benchmark/demo script:
+Run the lightweight retrieval evaluation script with:
 
 ```bash
 python scripts/evaluate.py
 ```
 
-The evaluation script prints sample query results, grounding state, sources, and answer previews.
+## Repository structure
 
-## Demo prompts
+- `app.py` FastAPI app for webhook-style execution
+- `bot.py` Telegram handlers and app factory
+- `config.py` settings and runtime validation
+- `ingest.py` document loading, chunking, and indexing
+- `rag_engine.py` retrieval pipeline and answer generation
+- `vector_store.py` Qdrant abstraction and embedding logic
+- `logging_utils.py` structured logging helpers
+- `tests/` focused regression coverage
+- `docs/` supporting architecture and demo notes
 
-Useful Telegram prompts for demos:
+## Engineering decisions
 
-- `/start`
-- `/help`
-- `/ask What are path parameters in FastAPI?`
-- `/ask How do I declare query parameters?`
-- `/ask When should I use async def in FastAPI?`
+- I kept the retrieval pipeline modular so embedding, storage, and serving concerns are easy to reason about
+- I used source-aware chunk metadata so answers can cite where they came from instead of returning generic text
+- I added semantic caching to reduce repeated generation work for similar questions
+- I kept conversation history intentionally short to reduce drift and keep responses grounded
+- I preserved both polling and webhook execution paths, but local polling is the most practical review path
 
-You can also upload an image to trigger the vision pipeline.
+## Notes for reviewers
 
-## Engineering tradeoffs
-
-- Qdrant was chosen because local disk-backed vector storage is not suitable for production deployment.
-- Fly.io is a better fit than Vercel for local `sentence-transformers` inference.
-- The FastAPI webhook path is more deployment-friendly than Telegram polling.
-- Local polling is still kept for quick development loops.
-- Local embeddings avoid hosted embedding API quotas and keep retrieval quality strong.
+- The bot is intended to be run locally for evaluation
+- The local path avoids deployment friction and hosted embedding limits
+- If you re-run ingestion, the existing fingerprint logic prevents unnecessary re-indexing
+- If you want to swap in your own documents, replace or extend the files under `data/` and run `python ingest.py` again
