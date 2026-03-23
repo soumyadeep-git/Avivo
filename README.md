@@ -1,3 +1,10 @@
+---
+title: Avivo RAG Assistant
+emoji: "🤖"
+sdk: docker
+app_port: 8000
+---
+
 # Telegram RAG Bot
 
 A deployment-oriented Telegram bot that combines:
