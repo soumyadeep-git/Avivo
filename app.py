@@ -48,9 +48,9 @@ async def get_telegram_application() -> Application:
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    """Warm the Telegram application and optionally register the webhook."""
-    application = await get_telegram_application()
+    """Optionally register the webhook without hard-failing startup."""
     if settings.deployment_mode == "webhook" and settings.auto_set_webhook:
+        application = await get_telegram_application()
         await application.bot.set_webhook(
             url=settings.telegram_webhook_url,
             secret_token=settings.telegram_webhook_secret,
