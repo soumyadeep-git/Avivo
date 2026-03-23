@@ -8,8 +8,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
+import cohere
 from qdrant_client import QdrantClient, models
-from sentence_transformers import SentenceTransformer
 
 from config import settings
 
@@ -51,9 +51,10 @@ class QdrantVectorStore:
 
     def __init__(self) -> None:
         self._client = self._create_client()
-        self._embedder = SentenceTransformer(settings.embedding_model)
+        self._embedder = cohere.ClientV2(api_key=settings.cohere_api_key)
         self._ensure_collection(settings.knowledge_collection_name)
         self._ensure_collection(settings.cache_collection_name)
+        self._ensure_payload_indexes(settings.knowledge_collection_name)
 
     @staticmethod
     def _create_client() -> QdrantClient:
@@ -69,7 +70,17 @@ class QdrantVectorStore:
 
     def _ensure_collection(self, collection_name: str) -> None:
         if self._client.collection_exists(collection_name):
-            return
+            collection_info = self._client.get_collection(collection_name)
+            current_size = collection_info.config.params.vectors.size
+            if current_size == settings.embedding_vector_size:
+                return
+            logger.warning(
+                "Recreating collection %s because vector size changed from %s to %s",
+                collection_name,
+                current_size,
+                settings.embedding_vector_size,
+            )
+            self._client.delete_collection(collection_name)
 
         self._client.create_collection(
             collection_name=collection_name,
@@ -79,15 +90,36 @@ class QdrantVectorStore:
             ),
         )
 
+    def _ensure_payload_indexes(self, collection_name: str) -> None:
+        """Create payload indexes required for cloud filtering in Qdrant."""
+        for field_name in ("path", "document_fingerprint"):
+            self._client.create_payload_index(
+                collection_name=collection_name,
+                field_name=field_name,
+                field_schema=models.PayloadSchemaType.KEYWORD,
+                wait=True,
+            )
+
     def _embed_texts(self, texts: Iterable[str]) -> List[List[float]]:
         text_list = list(texts)
         if not text_list:
             return []
-        vectors = self._embedder.encode(text_list, normalize_embeddings=True)
-        return [vector.tolist() for vector in vectors]
+        response = self._embedder.embed(
+            model=settings.embedding_model,
+            texts=text_list,
+            input_type="search_document",
+            embedding_types=["float"],
+        )
+        return response.embeddings.float_
 
     def _embed_query(self, query_text: str) -> List[float]:
-        return self._embed_texts([query_text])[0]
+        response = self._embedder.embed(
+            model=settings.embedding_model,
+            texts=[query_text],
+            input_type="search_query",
+            embedding_types=["float"],
+        )
+        return response.embeddings.float_[0]
 
     @staticmethod
     def _source_filter(source_path: str) -> models.Filter:

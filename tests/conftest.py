@@ -5,6 +5,7 @@ from pathlib import Path
 
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test-token")
 os.environ.setdefault("GROQ_API_KEY", "test-groq-key")
+os.environ.setdefault("COHERE_API_KEY", "test-cohere-key")
 os.environ.setdefault("APP_ENV", "development")
 os.environ.setdefault("DEPLOYMENT_MODE", "polling")
 

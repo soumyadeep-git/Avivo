@@ -7,6 +7,7 @@ def test_settings_builds_webhook_url() -> None:
     test_settings = Settings(
         TELEGRAM_BOT_TOKEN="token",
         GROQ_API_KEY="groq",
+        COHERE_API_KEY="cohere",
         DEPLOYMENT_MODE="webhook",
         TELEGRAM_WEBHOOK_BASE_URL="https://example.com",
         TELEGRAM_WEBHOOK_SECRET="secret",
@@ -20,5 +21,7 @@ def test_production_requires_qdrant_url() -> None:
         Settings(
             TELEGRAM_BOT_TOKEN="token",
             GROQ_API_KEY="groq",
+            COHERE_API_KEY="cohere",
             APP_ENV="production",
+            QDRANT_URL=None,
         )

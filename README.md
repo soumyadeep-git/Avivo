@@ -7,6 +7,7 @@ A deployment-oriented Telegram bot that combines:
 - conversational memory
 - image description using Groq vision models
 - FastAPI webhook support for serverless and container deployment
+- hosted Cohere embeddings for lightweight deployment
 
 This repository started as an assignment submission and has been upgraded toward a production-ready architecture.
 
@@ -22,6 +23,7 @@ flowchart TD
     Bot -->|"route command"| RAG[RAGEngine]
     RAG -->|"cache lookup"| Cache[QdrantCacheCollection]
     RAG -->|"vector retrieval"| KB[QdrantKnowledgeCollection]
+    RAG -->|"embeddings"| Cohere[CohereEmbeddingsAPI]
     RAG -->|"chat completion"| Groq[GroqAPI]
     Bot -->|"formatted response"| Telegram
     Telegram --> User
@@ -34,7 +36,7 @@ flowchart TD
     Docs[MarkdownAndTextDocs] --> Loader[IngestScript]
     Loader --> Chunker[SectionAwareChunker]
     Chunker --> Fingerprint[DocumentFingerprinting]
-    Fingerprint --> Embed[LocalEmbeddingModel]
+    Fingerprint --> Embed[CohereEmbeddingsAPI]
     Embed --> VectorDB[QdrantKnowledgeCollection]
 ```
 
@@ -54,7 +56,7 @@ flowchart TD
 
 - Text LLM: `llama-3.1-8b-instant` on Groq for low-latency inference
 - Vision LLM: `llama-3.2-11b-vision-preview` on Groq for image captioning
-- Embeddings: `all-MiniLM-L6-v2` for small-footprint semantic embeddings
+- Embeddings: `embed-english-v3.0` on Cohere for lightweight serverless-compatible embeddings
 - Vector store: Qdrant for a cloud-deployable retrieval backend with local dev fallback
 
 ## Environment variables
@@ -68,6 +70,7 @@ LOG_LEVEL=INFO
 
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token
 GROQ_API_KEY=your_groq_api_key
+COHERE_API_KEY=your_cohere_api_key
 
 TELEGRAM_WEBHOOK_BASE_URL=https://your-domain.vercel.app
 TELEGRAM_WEBHOOK_PATH=/telegram/webhook
@@ -84,6 +87,7 @@ Notes:
 - local development can use `DEPLOYMENT_MODE=polling`
 - production should use `DEPLOYMENT_MODE=webhook`
 - production also requires `QDRANT_URL`
+- `COHERE_API_KEY` is required for both ingestion and query-time embeddings
 - if `QDRANT_URL` is omitted, local embedded Qdrant storage is used
 
 ## Local development
@@ -196,6 +200,7 @@ You can also upload an image to trigger the vision pipeline.
 ## Engineering tradeoffs
 
 - Qdrant was chosen because local disk-backed vector storage is not suitable for serverless deployment.
+- Cohere embeddings replace the local `sentence-transformers` stack so the app fits serverless bundle limits more comfortably.
 - The FastAPI webhook path is more deployment-friendly than Telegram polling.
 - Local polling is still kept for quick development loops.
-- Embeddings remain local for quality and control, but the vector storage layer is cloud-ready.
+- Hosted embeddings trade a small external dependency for much simpler deployment on Vercel-like platforms.
