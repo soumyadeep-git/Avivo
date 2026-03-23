@@ -1,31 +1,55 @@
 # Avivo RAG Assistant
 
-Avivo is a Telegram-based retrieval-augmented assistant built as a hiring assignment submission. It answers questions over a document collection, cites the retrieved evidence, keeps short conversational memory, and can also describe images with a vision model.
+Avivo is a Telegram RAG assistant built for a hiring assignment. It answers questions over a document collection, shows grounded evidence, keeps short conversational memory, and can also describe images.
 
-The repository is set up so someone can clone it, add a small `.env`, build the index, and test the bot locally without depending on hosted embedding quotas. Retrieval uses local `sentence-transformers/all-MiniLM-L6-v2`, generation uses Groq, and the knowledge base is stored in Qdrant.
+The repository is meant to be tested locally. The retrieval stack uses local `sentence-transformers/all-MiniLM-L6-v2`, the generation layer uses Groq, and the knowledge base is stored in Qdrant.
 
-What the bot does
+## Project overview
 
-- Answers document questions through `/ask`
-- Shows whether the answer is grounded in retrieved material
-- Returns source labels and short snippet evidence
-- Keeps limited recent chat history for follow-up questions
-- Supports `/summarize` for conversation summaries
-- Accepts images and produces a caption plus tags
+- Telegram interface with `/ask`, `/summarize`, and image input
+- Local semantic retrieval with citation-style source output
+- Groq-based answer generation and image understanding
+- Idempotent ingestion with document fingerprinting
+- Focused tests for config, ingestion, retrieval formatting, and answer flow
 
-Core components
+## Tech stack
 
-- Text generation: `llama-3.1-8b-instant` via Groq for low-latency responses
-- Vision: `llama-3.2-11b-vision-preview` via Groq for image understanding
-- Embeddings: `sentence-transformers/all-MiniLM-L6-v2` for strong local semantic search
-- Vector store: Qdrant for simple local persistence and optional cloud portability
-- `bot.py` handles Telegram commands and user interaction
-- `rag_engine.py` handles retrieval, prompting, caching, and answer assembly
-- `vector_store.py` stores document chunks and semantic cache entries in Qdrant
-- `ingest.py` chunks documents, fingerprints them, and indexes them
-- `config.py` centralizes runtime settings and validation
+| Area | Tooling |
+| --- | --- |
+| Interface | Telegram Bot API, `python-telegram-bot` |
+| App runtime | Python, FastAPI |
+| LLM | Groq `llama-3.1-8b-instant` |
+| Vision model | Groq `llama-3.2-11b-vision-preview` |
+| Retrieval embeddings | `sentence-transformers/all-MiniLM-L6-v2` |
+| Vector store | Qdrant |
+| Testing | `pytest` |
 
-Local setup
+## Dataset used
+
+The main knowledge base used during development is the FastAPI documentation. The content was pulled from the official FastAPI GitHub repository and copied into `data/` as markdown files.
+
+Because `data/` is ignored in git, someone cloning the repo will not automatically get the indexed documentation corpus. To reproduce the same dataset locally, run:
+
+```bash
+git clone --depth 1 https://github.com/fastapi/fastapi.git temp_fastapi
+cp -r temp_fastapi/docs/en/docs/* data/
+rm -rf temp_fastapi
+```
+
+After that, run ingestion again.
+
+## High-level architecture
+
+1. Telegram messages are received by the bot handlers in `bot.py`.
+2. The query is passed to `rag_engine.py`.
+3. The engine checks semantic cache first.
+4. If needed, it retrieves the most relevant chunks from Qdrant using MiniLM embeddings.
+5. Groq generates the final answer using the retrieved context.
+6. The response is formatted with evidence, sources, snippets, and code blocks before being sent back to Telegram.
+
+The indexing side works through `ingest.py`, which reads markdown/text files, splits them into sections and chunks, computes document fingerprints, and upserts the resulting vectors into Qdrant.
+
+## How to set it up
 
 1. Clone the repo
 
@@ -34,7 +58,7 @@ git clone <your-repo-url>
 cd avivo
 ```
 
-2. Create the virtual environment
+2. Create and activate the virtual environment
 
 ```bash
 python3 -m venv venv
@@ -42,24 +66,29 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-3. Create the environment file
+3. Create a local `.env`
 
-Copy the example file and fill in your secrets:
-
-```bash
-cp .env.example .env
-```
-
-For local evaluation, the only required secrets are:
+Use your local `.env` with at least:
 
 - `TELEGRAM_BOT_TOKEN`
 - `GROQ_API_KEY`
 
-You can leave `QDRANT_URL` and `QDRANT_API_KEY` empty if you want to use the local embedded Qdrant path.
+Optional:
 
-4. Add or keep documents in `data/`
+- `QDRANT_URL`
+- `QDRANT_API_KEY`
 
-The project reads `.md` and `.txt` files from `data/`. A large FastAPI documentation corpus has already been used during development, but the system works with any similar text-based knowledge base.
+If those Qdrant cloud values are left empty, the project can use the local embedded path at `db/qdrant`.
+
+4. Prepare the dataset
+
+Either place your own `.md` or `.txt` files into `data/`, or pull the FastAPI docs corpus using:
+
+```bash
+git clone --depth 1 https://github.com/fastapi/fastapi.git temp_fastapi
+cp -r temp_fastapi/docs/en/docs/* data/
+rm -rf temp_fastapi
+```
 
 5. Build the retrieval index
 
@@ -67,82 +96,32 @@ The project reads `.md` and `.txt` files from `data/`. A large FastAPI documenta
 python ingest.py
 ```
 
-This step is idempotent. Unchanged files are skipped on later runs.
-
 6. Start the bot locally
 
 ```bash
 python bot.py
 ```
 
-This runs the bot in polling mode, which is the fastest way for an evaluator to try the system.
+## How to test it
 
-Minimal local configuration
-
-The default local flow is:
-
-- `APP_ENV=development`
-- `DEPLOYMENT_MODE=polling`
-- local Qdrant path at `db/qdrant`
-- local embeddings through MiniLM
-
-That means no external deployment step is required to evaluate the assignment locally.
-
-Suggested demo flow
-
-In Telegram:
-
-1. Send `/start`
-2. Ask `What is FastAPI?`
-3. Ask `Explain FastAPI dependency injection with examples from the docs`
-4. Ask `When should I use async def in FastAPI?`
-5. Upload an image and ask for a description
-
-Good prompts to try
-
-- `/ask What are path parameters in FastAPI?`
-- `/ask How do I declare query parameters?`
-- `/ask How should I structure a larger FastAPI app?`
-- `/ask Explain FastAPI dependency injection with examples from the docs`
-- `/ask Summarize how authentication works in FastAPI`
-
-Testing
-
-Run the test suite with:
+Run the automated checks:
 
 ```bash
 pytest
-```
-
-Run the lightweight retrieval evaluation script with:
-
-```bash
 python scripts/evaluate.py
 ```
 
-Repository structure
+Then test the bot in Telegram with prompts like:
 
-- `app.py` FastAPI app for webhook-style execution
-- `bot.py` Telegram handlers and app factory
-- `config.py` settings and runtime validation
-- `ingest.py` document loading, chunking, and indexing
-- `rag_engine.py` retrieval pipeline and answer generation
-- `vector_store.py` Qdrant abstraction and embedding logic
-- `logging_utils.py` structured logging helpers
-- `tests/` focused regression coverage
-- `docs/` supporting architecture and demo notes
+- `/start`
+- `/ask What is FastAPI?`
+- `/ask Explain FastAPI dependency injection with examples from the docs`
+- `/ask When should I use async def in FastAPI?`
+- upload one image and ask for a description
 
-Implementation notes
+## Notes
 
-- I kept the retrieval pipeline modular so embedding, storage, and serving concerns are easy to reason about
-- I used source-aware chunk metadata so answers can cite where they came from instead of returning generic text
-- I added semantic caching to reduce repeated generation work for similar questions
-- I kept conversation history intentionally short to reduce drift and keep responses grounded
-- I preserved both polling and webhook execution paths, but local polling is the most practical review path
-
-Notes
-
-- The bot is intended to be run locally for evaluation
-- The local path avoids deployment friction and hosted embedding limits
-- If you re-run ingestion, the existing fingerprint logic prevents unnecessary re-indexing
-- If you want to swap in your own documents, replace or extend the files under `data/` and run `python ingest.py` again
+- The intended review path is local execution, not hosted deployment
+- The indexing step is idempotent, so re-running `python ingest.py` only reprocesses changed files
+- The repository keeps both polling and webhook code paths, but local polling is the simplest way to evaluate the project
+- If you want to use a different knowledge base, replace the files under `data/` and run ingestion again
