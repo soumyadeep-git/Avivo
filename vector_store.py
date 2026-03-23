@@ -6,11 +6,9 @@ from dataclasses import dataclass
 from functools import lru_cache
 import logging
 from pathlib import Path
-import time
 from typing import Any, Dict, Iterable, List
-
-import cohere
 from qdrant_client import QdrantClient, models
+from sentence_transformers import SentenceTransformer
 
 from config import settings
 
@@ -52,7 +50,7 @@ class QdrantVectorStore:
 
     def __init__(self) -> None:
         self._client = self._create_client()
-        self._embedder = cohere.ClientV2(api_key=settings.cohere_api_key)
+        self._embedder = SentenceTransformer(settings.embedding_model, device="cpu")
         self._ensure_collection(settings.knowledge_collection_name)
         self._ensure_collection(settings.cache_collection_name)
         self._ensure_payload_indexes(settings.knowledge_collection_name)
@@ -105,64 +103,23 @@ class QdrantVectorStore:
         text_list = list(texts)
         if not text_list:
             return []
-        vectors: List[List[float]] = []
-        index = 0
-        batch_size = max(1, settings.embedding_batch_size)
-        retries = 0
-
-        while index < len(text_list):
-            batch = text_list[index : index + batch_size]
-            try:
-                response = self._embedder.embed(
-                    model=settings.embedding_model,
-                    texts=batch,
-                    input_type="search_document",
-                    embedding_types=["float"],
-                )
-            except Exception as exc:  # noqa: BLE001
-                status_code = getattr(exc, "status_code", None)
-                if status_code != 429:
-                    raise
-
-                if batch_size > 1:
-                    new_batch_size = max(1, batch_size // 2)
-                    logger.warning(
-                        "Cohere rate limit hit while embedding; reducing batch size from %s to %s",
-                        batch_size,
-                        new_batch_size,
-                    )
-                    batch_size = new_batch_size
-                    continue
-
-                retries += 1
-                if retries > settings.embedding_max_retries:
-                    raise
-
-                sleep_seconds = settings.embedding_retry_backoff_seconds * retries
-                logger.warning(
-                    "Cohere rate limit hit on single-text batch; retrying in %s seconds (%s/%s)",
-                    sleep_seconds,
-                    retries,
-                    settings.embedding_max_retries,
-                )
-                time.sleep(sleep_seconds)
-                continue
-
-            vectors.extend(response.embeddings.float_)
-            index += len(batch)
-            retries = 0
-            if index < len(text_list) and settings.embedding_batch_pause_seconds > 0:
-                time.sleep(settings.embedding_batch_pause_seconds)
-        return vectors
+        vectors = self._embedder.encode(
+            text_list,
+            batch_size=max(1, settings.embedding_batch_size),
+            normalize_embeddings=True,
+            show_progress_bar=False,
+            convert_to_numpy=True,
+        )
+        return vectors.tolist()
 
     def _embed_query(self, query_text: str) -> List[float]:
-        response = self._embedder.embed(
-            model=settings.embedding_model,
-            texts=[query_text],
-            input_type="search_query",
-            embedding_types=["float"],
+        vector = self._embedder.encode(
+            query_text,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+            convert_to_numpy=True,
         )
-        return response.embeddings.float_[0]
+        return vector.tolist()
 
     @staticmethod
     def _source_filter(source_path: str) -> models.Filter:

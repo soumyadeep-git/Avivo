@@ -6,8 +6,8 @@ A deployment-oriented Telegram bot that combines:
 - semantic caching
 - conversational memory
 - image description using Groq vision models
-- FastAPI webhook support for serverless and container deployment
-- hosted Cohere embeddings for lightweight deployment
+- FastAPI webhook support for container deployment
+- local semantic embeddings with `all-MiniLM-L6-v2`
 
 This repository started as an assignment submission and has been upgraded toward a production-ready architecture.
 
@@ -23,7 +23,7 @@ flowchart TD
     Bot -->|"route command"| RAG[RAGEngine]
     RAG -->|"cache lookup"| Cache[QdrantCacheCollection]
     RAG -->|"vector retrieval"| KB[QdrantKnowledgeCollection]
-    RAG -->|"embeddings"| Cohere[CohereEmbeddingsAPI]
+    RAG -->|"embeddings"| MiniLM[LocalMiniLMEmbeddings]
     RAG -->|"chat completion"| Groq[GroqAPI]
     Bot -->|"formatted response"| Telegram
     Telegram --> User
@@ -36,7 +36,7 @@ flowchart TD
     Docs[MarkdownAndTextDocs] --> Loader[IngestScript]
     Loader --> Chunker[SectionAwareChunker]
     Chunker --> Fingerprint[DocumentFingerprinting]
-    Fingerprint --> Embed[CohereEmbeddingsAPI]
+    Fingerprint --> Embed[LocalMiniLMEmbeddings]
     Embed --> VectorDB[QdrantKnowledgeCollection]
 ```
 
@@ -44,7 +44,7 @@ flowchart TD
 
 - `bot.py`: Telegram command handlers and application factory
 - `app.py`: FastAPI webhook app with health and readiness endpoints
-- `api/index.py`: Vercel entrypoint
+- `api/index.py`: legacy Vercel entrypoint
 - `rag_engine.py`: retrieval, prompting, memory, and Groq integration
 - `vector_store.py`: Qdrant vector abstraction for knowledge base and semantic cache
 - `ingest.py`: chunking, fingerprint-aware indexing, and upserts
@@ -56,8 +56,8 @@ flowchart TD
 
 - Text LLM: `llama-3.1-8b-instant` on Groq for low-latency inference
 - Vision LLM: `llama-3.2-11b-vision-preview` on Groq for image captioning
-- Embeddings: `embed-english-v3.0` on Cohere for lightweight serverless-compatible embeddings
-- Vector store: Qdrant for a cloud-deployable retrieval backend with local dev fallback
+- Embeddings: `sentence-transformers/all-MiniLM-L6-v2` for strong local semantic retrieval
+- Vector store: Qdrant Cloud for deployable persistence with local dev fallback
 
 ## Environment variables
 
@@ -70,9 +70,8 @@ LOG_LEVEL=INFO
 
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token
 GROQ_API_KEY=your_groq_api_key
-COHERE_API_KEY=your_cohere_api_key
 
-TELEGRAM_WEBHOOK_BASE_URL=https://your-domain.vercel.app
+TELEGRAM_WEBHOOK_BASE_URL=https://your-app.fly.dev
 TELEGRAM_WEBHOOK_PATH=/telegram/webhook
 TELEGRAM_WEBHOOK_SECRET=your_random_secret
 AUTO_SET_WEBHOOK=false
@@ -87,7 +86,7 @@ Notes:
 - local development can use `DEPLOYMENT_MODE=polling`
 - production should use `DEPLOYMENT_MODE=webhook`
 - production also requires `QDRANT_URL`
-- `COHERE_API_KEY` is required for both ingestion and query-time embeddings
+- local embeddings remove hosted embedding API quotas from the runtime path
 - if `QDRANT_URL` is omitted, local embedded Qdrant storage is used
 
 ## Local development
@@ -150,19 +149,17 @@ docker-compose up --build
 
 The app is exposed on `http://localhost:8000`.
 
-## Vercel deployment
+## Fly.io deployment
 
-This repository includes:
-
-- `api/index.py` as the serverless entrypoint
-- `vercel.json` for routing
+This repository includes a `fly.toml` template for container deployment on Fly.io.
 
 Typical deployment flow:
 
-1. Create a Vercel project from this repo
-2. Set all required environment variables
-3. Deploy
-4. Run `python scripts/set_webhook.py` with the deployed URL configured in `.env`
+1. Install the Fly CLI and authenticate
+2. Create your app with `fly launch --copy-config`
+3. Set secrets like `TELEGRAM_BOT_TOKEN`, `GROQ_API_KEY`, `QDRANT_URL`, and `QDRANT_API_KEY`
+4. Deploy with `fly deploy`
+5. Run `python scripts/set_webhook.py` with `TELEGRAM_WEBHOOK_BASE_URL` set to your Fly domain
 
 ## Health endpoints
 
@@ -199,8 +196,8 @@ You can also upload an image to trigger the vision pipeline.
 
 ## Engineering tradeoffs
 
-- Qdrant was chosen because local disk-backed vector storage is not suitable for serverless deployment.
-- Cohere embeddings replace the local `sentence-transformers` stack so the app fits serverless bundle limits more comfortably.
+- Qdrant was chosen because local disk-backed vector storage is not suitable for production deployment.
+- Fly.io is a better fit than Vercel for local `sentence-transformers` inference.
 - The FastAPI webhook path is more deployment-friendly than Telegram polling.
 - Local polling is still kept for quick development loops.
-- Hosted embeddings trade a small external dependency for much simpler deployment on Vercel-like platforms.
+- Local embeddings avoid hosted embedding API quotas and keep retrieval quality strong.

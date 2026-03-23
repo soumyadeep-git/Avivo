@@ -11,6 +11,7 @@ WORKDIR /app
 # Install system dependencies required for building some python packages (if any)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the requirements file into the container
