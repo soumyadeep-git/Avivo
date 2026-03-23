@@ -9,5 +9,6 @@ data/
 !data/README.md
 
 # Secrets
+.env
 .env.*
 !.env.example
