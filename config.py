@@ -67,6 +67,16 @@ class Settings(BaseSettings):
     embedding_provider: Literal["cohere"] = Field(default="cohere", alias="EMBEDDING_PROVIDER")
     embedding_model: str = Field(default="embed-english-v3.0", alias="EMBEDDING_MODEL")
     embedding_vector_size: int = Field(default=1024, alias="EMBEDDING_VECTOR_SIZE")
+    embedding_batch_size: int = Field(default=8, alias="EMBEDDING_BATCH_SIZE")
+    embedding_batch_pause_seconds: float = Field(
+        default=1.0,
+        alias="EMBEDDING_BATCH_PAUSE_SECONDS",
+    )
+    embedding_max_retries: int = Field(default=4, alias="EMBEDDING_MAX_RETRIES")
+    embedding_retry_backoff_seconds: int = Field(
+        default=15,
+        alias="EMBEDDING_RETRY_BACKOFF_SECONDS",
+    )
 
     chunk_size: int = Field(default=900, alias="CHUNK_SIZE")
     chunk_overlap: int = Field(default=120, alias="CHUNK_OVERLAP")

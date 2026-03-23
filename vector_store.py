@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 import logging
 from pathlib import Path
+import time
 from typing import Any, Dict, Iterable, List
 
 import cohere
@@ -104,13 +105,55 @@ class QdrantVectorStore:
         text_list = list(texts)
         if not text_list:
             return []
-        response = self._embedder.embed(
-            model=settings.embedding_model,
-            texts=text_list,
-            input_type="search_document",
-            embedding_types=["float"],
-        )
-        return response.embeddings.float_
+        vectors: List[List[float]] = []
+        index = 0
+        batch_size = max(1, settings.embedding_batch_size)
+        retries = 0
+
+        while index < len(text_list):
+            batch = text_list[index : index + batch_size]
+            try:
+                response = self._embedder.embed(
+                    model=settings.embedding_model,
+                    texts=batch,
+                    input_type="search_document",
+                    embedding_types=["float"],
+                )
+            except Exception as exc:  # noqa: BLE001
+                status_code = getattr(exc, "status_code", None)
+                if status_code != 429:
+                    raise
+
+                if batch_size > 1:
+                    new_batch_size = max(1, batch_size // 2)
+                    logger.warning(
+                        "Cohere rate limit hit while embedding; reducing batch size from %s to %s",
+                        batch_size,
+                        new_batch_size,
+                    )
+                    batch_size = new_batch_size
+                    continue
+
+                retries += 1
+                if retries > settings.embedding_max_retries:
+                    raise
+
+                sleep_seconds = settings.embedding_retry_backoff_seconds * retries
+                logger.warning(
+                    "Cohere rate limit hit on single-text batch; retrying in %s seconds (%s/%s)",
+                    sleep_seconds,
+                    retries,
+                    settings.embedding_max_retries,
+                )
+                time.sleep(sleep_seconds)
+                continue
+
+            vectors.extend(response.embeddings.float_)
+            index += len(batch)
+            retries = 0
+            if index < len(text_list) and settings.embedding_batch_pause_seconds > 0:
+                time.sleep(settings.embedding_batch_pause_seconds)
+        return vectors
 
     def _embed_query(self, query_text: str) -> List[float]:
         response = self._embedder.embed(

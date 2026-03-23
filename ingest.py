@@ -105,9 +105,11 @@ def get_document_files(data_dir: str) -> List[str]:
     """Retrieves all markdown and text files from the data directory."""
     root = Path(data_dir)
     files = list(root.rglob("*.txt")) + list(root.rglob("*.md"))
-    # Exclude instructional READMEs
+    # Exclude instructional READMEs and opt-out files like `foo.skip.md`.
     return sorted(
-        str(file_path) for file_path in files if str(file_path) != str(root / "README.md")
+        str(file_path)
+        for file_path in files
+        if str(file_path) != str(root / "README.md") and ".skip." not in file_path.name
     )
 
 
